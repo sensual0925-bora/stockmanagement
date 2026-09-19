@@ -46,7 +46,12 @@ a{color:var(--accent)}
 .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
 .wrap{max-width:640px;margin:0 auto;padding-inline:max(16px,env(safe-area-inset-left,0px));padding-top:calc(20px + env(safe-area-inset-top,0px));padding-bottom:calc(110px + env(safe-area-inset-bottom,0px))}
 
-.top{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.hero{display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px 14px;min-width:0}
+.hero > div{flex:1 1 150px;min-width:0}
+.photos{display:flex;gap:8px}
+.photo{display:block;flex:none;width:min(104px,calc((100vw - 104px) / 3));height:auto;aspect-ratio:4/5;object-fit:cover;border-radius:12px;box-shadow:0 4px 14px rgba(0,0,0,.18)}
+@media (min-width:700px){ .photo{width:160px;border-radius:14px} }
 h1{margin:0;font-size:22px;font-weight:700;letter-spacing:-.02em}
 .sub-line{margin:2px 0 0;color:var(--ink-2);font-size:13px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 .sync{font-size:12px;color:var(--ink-3)}
@@ -164,9 +169,11 @@ details.more .form{margin-top:12px}
 <body>
 <div class="wrap">
   <header class="top">
-    <div>
-      <h1>스토어 재고장</h1>
-      <p class="sub-line"><span id="subline">불러오는 중…</span><span class="sync" id="sync"></span></p>
+    <div class="hero">
+      <h1 class="photos"><img class="photo" src="photo.jpg" alt="스토어 재고장" width="201" height="251"><img class="photo" src="photo2.jpg" alt="" width="480" height="600"><img class="photo" src="photo3.jpg" alt="" width="480" height="600"></h1>
+      <div>
+        <p class="sub-line"><span id="subline">불러오는 중…</span><span class="sync" id="sync"></span></p>
+      </div>
     </div>
     <button class="iconbtn" id="btnSettings" type="button" aria-label="설정">
       <svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="2.6"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M4.2 15.8l1.7-1.7M14.1 5.9l1.7-1.7"/></svg>
