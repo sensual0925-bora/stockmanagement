@@ -682,7 +682,7 @@ details.more .form{margin-top:12px}
     if (e.key === "Enter" && e.target.matches("[data-set],[data-rename]")) { e.preventDefault(); e.target.blur(); }
   });
   overlay.addEventListener("focusout", e => {
-    if (e.target.matches("input")) setTimeout(() => { if (!overlay.contains(document.activeElement) || !document.activeElement.matches("input")) renderSheet(); }, 0);
+    if (e.target.matches("[data-set],[data-rename]")) setTimeout(() => { if (!overlay.contains(document.activeElement) || !document.activeElement.matches("input")) renderSheet(); }, 0);
   });
   overlay.addEventListener("submit", async e => {
     e.preventDefault();
