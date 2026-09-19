@@ -181,8 +181,8 @@ details.more .form{margin-top:12px}
   </header>
 
   <div class="banner" id="keyBanner" hidden>
-    <span>지금은 <b>보기만</b> 할 수 있어요. 이 기기에서 재고를 고치려면 GitHub 키를 한 번 넣어 주세요.</span>
-    <button class="btn primary" type="button" data-open="key">키 넣기</button>
+    <span>지금은 <b>보기만</b> 할 수 있어요. 재고를 고치려면 로그인해 주세요.</span>
+    <button class="btn primary" type="button" data-open="login">로그인</button>
   </div>
 
   <div class="bar">
@@ -201,16 +201,16 @@ details.more .form{margin-top:12px}
 <div class="toast" id="toast" hidden></div>
 <input type="file" id="csvFile" accept=".csv,text/csv" hidden>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.116.0/dist/umd/supabase.js"></script>
 <script>
 (() => {
-  /* ===== GitHub 저장소 설정 ===== */
-  const OWNER = "sensual0925-bora";
-  const REPO = "stockmanagement";
-  const BRANCH = "main";
-  const FILE = "data/stock.json";
-  const API = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${FILE}`;
-  const TOKEN_KEY = "stockledger.token";
+  /* ===== Supabase 설정 ===== */
+  // publishable 키는 웹페이지에 넣어 쓰도록 만든 공개용 키 (secret 키는 절대 넣지 말 것)
+  const SUPABASE_URL = "https://nzcxfunymionwvitfswa.supabase.co";
+  const SUPABASE_KEY = "sb_publishable_7QL1DGVIJHsagmIwlJZzrw_EOQ20OUF";
+  const LEGACY_FILE = "data/stock.json";  // Supabase로 옮기기 전 GitHub에 저장하던 재고 (처음 한 번 옮겨 올 때만 사용)
   const LOG_MAX = 20;
+  const sb = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 
   const $ = s => document.querySelector(s);
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -219,12 +219,8 @@ details.more .form{margin-top:12px}
   const fmtTime = iso => { const d = new Date(iso); return isNaN(d) ? "" : `${pad(d.getMonth()+1)}.${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
   const clock = d => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 
-  const store = {
-    get(k) { try { return localStorage.getItem(k); } catch { return null; } },
-    set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} },
-  };
-  let token = store.get(TOKEN_KEY) || "";
-  const canEdit = () => !!token;
+  let user = null, editor = false;  // 로그인한 계정, 편집 권한(stock_editors에 있는 이메일)
+  const canEdit = () => editor;
 
   function toast(msg, ms = 2600) {
     const t = $("#toast"); t.textContent = msg; t.hidden = false;
@@ -232,7 +228,7 @@ details.more .form{margin-top:12px}
   }
 
   /* ===== 데이터: 서버 본(base) + 아직 저장 안 된 변경(pending) ===== */
-  let base = null, sha = null, loaded = false;
+  let base = null, version = null, legacy = false, loaded = false;  // legacy: 아직 Supabase가 비어 있어 GitHub 파일을 보여 주는 중
   let pending = [];
   let saving = false, saveTimer = null, lastSaved = null, syncError = "";
   let cache = null;
@@ -315,41 +311,74 @@ details.more .form{margin-top:12px}
   }
 
   function change(op) {
-    if (!canEdit()) { openSheet({ kind: "key" }); return; }
+    if (!canEdit()) { openSheet({ kind: "login" }); return; }
     op.t = new Date().toISOString();
     pending.push(op); cache = null;
     renderAll();
     scheduleSave(1200);
   }
 
-  /* ===== GitHub 통신 ===== */
-  const b64encode = str => { const bytes = new TextEncoder().encode(str); let bin = ""; for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(bin); };
-  const b64decode = b64 => new TextDecoder().decode(Uint8Array.from(atob(b64.replace(/\s/g, "")), c => c.charCodeAt(0)));
-  const headers = () => ({ Accept: "application/vnd.github+json", ...(token ? { Authorization: `Bearer ${token}` } : {}) });
+  /* ===== Supabase 통신 ===== */
+  const fail = kind => Object.assign(new Error(kind), { kind });
+
+  // 옮기기 전 GitHub에 저장돼 있던 재고 파일 (Supabase가 비어 있을 때만 읽음)
+  async function fetchLegacy() {
+    const res = await fetch(`${LEGACY_FILE}?t=${Date.now()}`, { cache: "no-store" });
+    if (!res.ok) throw fail("load");
+    return res.json();
+  }
 
   async function fetchLatest() {
-    const res = await fetch(`${API}?ref=${BRANCH}`, { headers: headers(), cache: "no-cache" });
-    if (res.status === 401) { forgetToken("GitHub 키가 만료됐거나 잘못됐어요. 다시 넣어 주세요."); return fetchLatest(); }
-    if (res.status === 403 || res.status === 429) throw Object.assign(new Error("rate"), { kind: "rate" });
-    if (!res.ok) throw Object.assign(new Error("load"), { kind: "load", status: res.status });
-    const j = await res.json();
-    return { data: JSON.parse(b64decode(j.content)), sha: j.sha };
+    if (!sb) throw fail("load");
+    const { data: row, error } = await sb.from("stock_ledger").select("data,version").eq("id", 1).maybeSingle();
+    // 테이블을 아직 안 만들었으면(supabase/stock.sql 실행 전) 기존 파일을 보기 전용으로 보여 줌
+    if (error?.code === "PGRST205" || (!error && !row)) return { data: await fetchLegacy(), version: null, legacy: true };
+    if (error) throw fail("load");
+    if (row.data == null) return { data: await fetchLegacy(), version: row.version, legacy: true };
+    return { data: row.data, version: row.version, legacy: false };
   }
 
   async function refresh(silent) {
     if (saving) return;
     try {
       const r = await fetchLatest();
-      if (r.sha !== sha) { base = r.data; sha = r.sha; cache = null; }
+      if (r.legacy || legacy || r.version !== version) { base = r.data; version = r.version; legacy = r.legacy; cache = null; }
       loaded = true; if (!pending.length) syncError = "";
       renderAll();
     } catch (e) {
       if (!loaded) {
-        $("#list").innerHTML = `<div class="list"><div class="empty"><strong>재고를 불러오지 못했어요</strong>${e.kind === "rate" ? "잠시 뒤 다시 열어 주세요. (키를 넣으면 이 제한이 풀려요)" : "인터넷 연결을 확인하고 새로고침해 주세요."}</div></div>`;
+        $("#list").innerHTML = `<div class="list"><div class="empty"><strong>재고를 불러오지 못했어요</strong>인터넷 연결을 확인하고 새로고침해 주세요.</div></div>`;
         $("#subline").textContent = "연결 안 됨";
       } else if (!silent) toast("최신 재고를 불러오지 못했어요.");
     }
   }
+
+  // Supabase가 비어 있으면 편집자가 로그인했을 때 기존 재고를 한 번 옮겨 담음
+  async function migrate() {
+    if (!legacy || version == null || !canEdit() || saving || pending.length) return;
+    saving = true; renderSync();
+    const { data: v, error } = await sb.rpc("save_stock", { p_expected_version: version, p_data: base, p_summary: "GitHub에 있던 재고를 옮겨 옴" });
+    saving = false;
+    if (error) { await refresh(true); return; }
+    version = v; legacy = false; lastSaved = new Date();
+    renderAll();
+    toast("기존 재고를 Supabase로 옮겼어요.");
+  }
+
+  /* ===== 로그인 ===== */
+  async function checkEditor() {
+    if (!sb || !user) { editor = false; return; }
+    const { data, error } = await sb.rpc("is_stock_editor");
+    editor = !error && data === true;
+  }
+  async function onUser(u) {
+    user = u; await checkEditor();
+    renderAll();
+    if (editor && pending.length) scheduleSave(300);
+    migrate();
+  }
+  // 콜백 안에서 바로 Supabase를 부르면 멈출 수 있어 한 박자 늦춰 처리
+  sb?.auth.onAuthStateChange((event, session) => { setTimeout(() => onUser(session?.user || null), 0); });
 
   function scheduleSave(ms) { clearTimeout(saveTimer); saveTimer = setTimeout(save, ms); }
 
@@ -360,31 +389,28 @@ details.more .form{margin-top:12px}
     const next = sent.reduce((d, op) => (apply(d, op), d), clone(base));
     const summary = describe(sent);
     try {
-      const res = await fetch(API, {
-        method: "PUT", headers: { ...headers(), "Content-Type": "application/json" }, keepalive: true,
-        body: JSON.stringify({ message: summary, content: b64encode(JSON.stringify(next, null, 1)), sha, branch: BRANCH }),
-      });
-      if (res.status === 409 || res.status === 422) {
+      if (version == null) throw fail("setup");
+      const { data: v, error } = await sb.rpc("save_stock", { p_expected_version: version, p_data: next, p_summary: summary });
+      if (error?.message === "conflict") {
         // 다른 기기에서 먼저 저장함 → 최신본을 받아서 내 변경을 다시 얹음
-        const r = await fetchLatest(); base = r.data; sha = r.sha; cache = null;
+        const r = await fetchLatest(); base = r.data; version = r.version; legacy = r.legacy; cache = null;
         saving = false;
         if (attempt < 3) return save(attempt + 1);
-        throw Object.assign(new Error("conflict"), { kind: "conflict" });
+        throw fail("conflict");
       }
-      if (res.status === 401) { saving = false; forgetToken("GitHub 키가 만료됐거나 잘못됐어요. 다시 넣어 주세요."); return; }
-      if (res.status === 403 || res.status === 404) throw Object.assign(new Error("perm"), { kind: "perm" });
-      if (!res.ok) throw Object.assign(new Error("save"), { kind: "save" });
-      const j = await res.json();
-      base = next; sha = j.content.sha;
+      if (error?.message === "forbidden" || error?.code === "42501") throw fail("perm");
+      if (error) throw fail("save");
+      base = next; version = v; legacy = false;
       pending = pending.slice(sent.length); cache = null;
       lastSaved = new Date(); saving = false;
       renderAll();
       if (pending.length) scheduleSave(600);
     } catch (e) {
       saving = false;
-      syncError = e.kind === "perm" ? "키에 쓰기 권한이 없어요" : "저장 실패";
+      syncError = e.kind === "perm" ? "편집 권한이 없어요" : e.kind === "setup" ? "Supabase 준비 전" : "저장 실패";
       renderSync();
-      if (e.kind === "perm") toast("이 GitHub 키로는 저장할 수 없어요. 설정에서 ‘Contents: Read and write’ 권한으로 키를 다시 만들어 주세요.", 5000);
+      if (e.kind === "perm") toast("이 계정은 편집 권한이 없어요. Supabase의 stock_editors에 로그인 이메일을 추가해 주세요.", 5000);
+      else if (e.kind === "setup") toast("Supabase에 재고 테이블이 아직 없어요. supabase/stock.sql을 먼저 실행해 주세요.", 5000);
       else scheduleSave(8000);
     }
   }
@@ -396,18 +422,12 @@ details.more .form{margin-top:12px}
     return list.length ? `재고 변경: ${list.slice(0, 3).join(", ")}${list.length > 3 ? ` 외 ${list.length - 3}개` : ""}` : "재고장 변경";
   }
 
-  function forgetToken(msg) {
-    token = ""; store.set(TOKEN_KEY, null);
-    if (msg) toast(msg, 4000);
-    renderAll();
-  }
-
   window.addEventListener("beforeunload", e => { if (pending.length) { save(); e.preventDefault(); e.returnValue = ""; } });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) { if (pending.length) { clearTimeout(saveTimer); save(); } }
     else if (!pending.length) refresh(true);
   });
-  setInterval(() => { if (!document.hidden && !pending.length && !saving) refresh(true); }, token ? 30000 : 90000);
+  setInterval(() => { if (!document.hidden && !pending.length && !saving) refresh(true); }, 30000);
 
   /* ===== 화면 ===== */
   const view = { q: "", filter: "all" };
@@ -507,7 +527,9 @@ details.more .form{margin-top:12px}
     if (!sheet) return;
     const o = $("#overlay");
     if (!fresh && o.contains(document.activeElement) && document.activeElement.matches("input")) return;
-    ({ item: itemSheet, add: addSheet, settings: settingsSheet, key: keySheet })[sheet.kind]?.();
+    // 입력 중인 폼(로그인·상품 추가)은 백그라운드 새로고침 때 다시 그리지 않음 (입력값이 지워지지 않게)
+    if (!fresh && (sheet.kind === "login" || sheet.kind === "add")) return;
+    ({ item: itemSheet, add: addSheet, settings: settingsSheet, login: loginSheet })[sheet.kind]?.();
   }
 
   function stepper(opt, value, small) {
@@ -527,7 +549,7 @@ details.more .form{margin-top:12px}
     if (!p) { closeSheet(); return; }
     const st = stateOf(p, d.lowAt);
     const edit = canEdit();
-    const keyNote = edit ? "" : `<div class="callout">보기 전용이에요. 재고를 고치려면 <button type="button" class="linkbtn" data-open="key">GitHub 키 넣기</button></div>`;
+    const keyNote = edit ? "" : `<div class="callout">보기 전용이에요. 재고를 고치려면 <button type="button" class="linkbtn" data-open="login">로그인</button></div>`;
     let stockHtml;
     if (hasOpts(p)) {
       stockHtml = `<section class="sec">
@@ -590,10 +612,10 @@ details.more .form{margin-top:12px}
         </div>
       </form>
       <section class="sec">
-        <h3><span>이 기기의 GitHub 키</span></h3>
-        ${canEdit()
-          ? `<p class="hint" style="margin:0 0 8px">키가 저장돼 있어서 이 기기에서 재고를 고칠 수 있어요.</p><button class="btn danger block" type="button" data-act="forget">이 기기에서 키 지우기</button>`
-          : `<button class="btn primary block" type="button" data-open="key">키 넣기</button>`}
+        <h3><span>로그인</span></h3>
+        ${user
+          ? `<p class="hint" style="margin:0 0 8px"><b>${esc(user.email)}</b>로 로그인했어요. ${canEdit() ? "이 기기에서 재고를 고칠 수 있어요." : "이 계정은 편집 권한이 없어서 보기만 할 수 있어요."}</p><button class="btn danger block" type="button" data-act="logout">로그아웃</button>`
+          : `<button class="btn primary block" type="button" data-open="login">로그인</button>`}
       </section>
       <section class="sec">
         <h3><span>스마트스토어 상품 가져오기</span></h3>
@@ -602,25 +624,21 @@ details.more .form{margin-top:12px}
       </section>
       <section class="sec">
         <h3><span>데이터 위치</span></h3>
-        <p class="hint" style="margin:0">재고는 <a href="https://github.com/${OWNER}/${REPO}/blob/${BRANCH}/${FILE}" target="_blank" rel="noopener">GitHub의 ${FILE}</a> 파일에 저장되고, 바뀔 때마다 기록이 남아요.</p>
+        <p class="hint" style="margin:0">${legacy
+          ? "아직 Supabase로 옮기기 전이라 GitHub의 기존 재고 파일을 보여 주고 있어요. 편집 권한이 있는 계정으로 로그인하면 자동으로 옮겨져요."
+          : "재고는 Supabase에 저장되고, 저장할 때마다 직전 상태가 기록으로 남아요(최근 300개)."}</p>
       </section>`);
   }
 
-  function keySheet() {
-    frame("GitHub 키 넣기", "기기마다 한 번만 하면 돼요", `
-      <ol class="steps">
-        <li>GitHub(<b>${OWNER}</b>)에 로그인한 상태에서 아래 <b>키 만들기 페이지 열기</b>를 눌러요.</li>
-        <li><b>Token name</b>: 재고장 · <b>Expiration</b>: No expiration (또는 원하는 기간)</li>
-        <li><b>Repository access</b>: Only select repositories → <b>${REPO}</b></li>
-        <li><b>Permissions</b> → Repository permissions → <b>Contents</b>: <b>Read and write</b></li>
-        <li>맨 아래 <b>Generate token</b> → 나온 키(github_pat_…)를 복사해서 아래에 붙여 넣어요.</li>
-      </ol>
-      <a class="btn block" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">키 만들기 페이지 열기</a>
-      <form class="form" id="keyForm">
-        <div class="field"><label for="keyInput">GitHub 키</label><input id="keyInput" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="github_pat_…" required></div>
-        <button class="btn primary block" type="submit" id="keySubmit">확인하고 저장</button>
-        <p class="hint">키는 이 기기의 브라우저에만 저장되고 다른 곳으로 보내지 않아요. 키를 알면 이 저장소를 고칠 수 있으니 다른 사람에게 알려주지 마세요.</p>
+  function loginSheet() {
+    frame("로그인", "기기마다 한 번 로그인하면 유지돼요", `
+      <form class="form" id="loginForm">
+        <div class="field"><label for="lgEmail">이메일</label><input id="lgEmail" type="email" autocomplete="username" autocapitalize="off" spellcheck="false" required></div>
+        <div class="field"><label for="lgPw">비밀번호</label><input id="lgPw" type="password" autocomplete="current-password" required></div>
+        <button class="btn primary block" type="submit" id="lgSubmit">로그인</button>
+        <p class="hint">Supabase 대시보드 → Authentication → Users에서 만든 계정으로 로그인해요. 편집 권한은 stock_editors에 등록된 이메일에만 있어요.</p>
       </form>`);
+    setTimeout(() => $("#lgEmail")?.focus(), 50);
   }
 
   /* ===== 동작 ===== */
@@ -670,7 +688,10 @@ details.more .form{margin-top:12px}
       change({ op: "delProduct", id: p.id }); closeSheet(); toast("삭제했어요.");
     }
     else if (act === "csv") $("#csvFile").click();
-    else if (act === "forget") { if (confirm("이 기기에서 GitHub 키를 지울까요? 지우면 보기만 할 수 있어요.")) { forgetToken(); closeSheet(); toast("키를 지웠어요."); } }
+    else if (act === "logout") {
+      if (pending.length) { toast("아직 저장 중인 변경이 있어요. 잠시 후 다시 시도해 주세요."); return; }
+      if (confirm("로그아웃할까요? 로그아웃하면 보기만 할 수 있어요.")) sb.auth.signOut().then(() => { closeSheet(); toast("로그아웃했어요."); });
+    }
   });
   overlay.addEventListener("change", e => {
     if (e.target.matches("[data-set]")) {
@@ -720,21 +741,22 @@ details.more .form{margin-top:12px}
       change({ op: "lowAt", value: v });
       toast(`재고 ${v}개 이하를 ‘부족’으로 표시해요.`);
     }
-    if (id === "keyForm") {
-      const val = $("#keyInput").value.trim(); if (!val) return;
-      const btn = $("#keySubmit"); btn.disabled = true; btn.textContent = "확인 중…";
-      try {
-        const res = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}`, { headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${val}` }, cache: "no-store" });
-        if (res.status === 401) throw new Error("키가 올바르지 않아요. 복사한 키 전체를 붙여 넣었는지 확인해 주세요.");
-        if (res.status === 404) throw new Error(`이 키로는 ${REPO} 저장소에 접근할 수 없어요. Repository access에서 ${REPO}를 골랐는지 확인해 주세요.`);
-        if (!res.ok) throw new Error("확인하지 못했어요. 잠시 후 다시 시도해 주세요.");
-        token = val; store.set(TOKEN_KEY, val);
-        closeSheet(); toast("키를 저장했어요. 이제 이 기기에서 재고를 고칠 수 있어요.");
-        await refresh(true); renderAll();
-      } catch (err) {
-        btn.disabled = false; btn.textContent = "확인하고 저장";
-        toast(err.message, 4500);
+    if (id === "loginForm") {
+      const email = $("#lgEmail").value.trim(), password = $("#lgPw").value;
+      if (!email || !password) return;
+      if (!sb) { toast("로그인 기능을 불러오지 못했어요. 새로고침해 주세요."); return; }
+      const btn = $("#lgSubmit"); btn.disabled = true; btn.textContent = "로그인 중…";
+      const { data, error } = await sb.auth.signInWithPassword({ email, password });
+      if (error) {
+        btn.disabled = false; btn.textContent = "로그인";
+        toast(/invalid login credentials/i.test(error.message) ? "이메일 또는 비밀번호가 맞지 않아요."
+          : /not confirmed/i.test(error.message) ? "이메일 인증이 안 된 계정이에요. 받은 메일의 인증 링크를 눌러 주세요."
+          : "로그인하지 못했어요. 잠시 후 다시 시도해 주세요.", 4500);
+        return;
       }
+      await onUser(data.user);
+      closeSheet();
+      toast(canEdit() ? "로그인했어요. 이제 재고를 고칠 수 있어요." : "로그인했지만 이 계정은 편집 권한이 없어요. Supabase의 stock_editors에 이메일을 추가해 주세요.", 5000);
     }
   });
   document.addEventListener("keydown", e => { if (e.key === "Escape" && sheet) closeSheet(); });
@@ -777,7 +799,7 @@ details.more .form{margin-top:12px}
   $("#q").addEventListener("input", e => { view.q = e.target.value; renderList(); });
   $("#chips").addEventListener("click", e => { const b = e.target.closest("[data-filter]"); if (b) { view.filter = b.dataset.filter; renderList(); } });
   $("#list").addEventListener("click", e => { const it = e.target.closest(".item"); if (it) openSheet({ kind: "item", id: it.dataset.id, editOpts: false }); });
-  $("#btnAdd").addEventListener("click", () => openSheet({ kind: canEdit() ? "add" : "key" }));
+  $("#btnAdd").addEventListener("click", () => openSheet({ kind: canEdit() ? "add" : "login" }));
   $("#btnSettings").addEventListener("click", () => openSheet({ kind: "settings" }));
 
   refresh();
