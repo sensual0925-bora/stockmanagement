@@ -245,6 +245,8 @@ details.more .form{margin-top:12px}
   const find = (d, id) => d.products.find(p => p.id === id);
   const hasOpts = p => Array.isArray(p.options) && p.options.length > 0;
   const totalOf = p => hasOpts(p) ? p.options.reduce((a, o) => a + Number(o.stock || 0), 0) : Number(p.stock || 0);
+  // 마지막으로 재고 수량이 바뀐 시각 (기록에 없으면 0 → 목록 맨 아래)
+  const stockChangedAt = p => { for (let i = (p.log || []).length - 1; i >= 0; i--) if (p.log[i].delta !== undefined) return new Date(p.log[i].t).getTime() || 0; return 0; };
 
   function pushLog(p, t, entry) {
     p.log = p.log || [];
@@ -463,6 +465,7 @@ details.more .form{margin-top:12px}
       return true;
     });
     if (view.filter === "attention") arr = arr.slice().sort((a, b) => totalOf(a) - totalOf(b));
+    else arr = arr.slice().sort((a, b) => stockChangedAt(b) - stockChangedAt(a));
 
     if (!items.length) { $("#list").innerHTML = `<div class="list"><div class="empty"><strong>등록된 상품이 없어요</strong>아래 ‘상품 추가’를 눌러 시작하세요.</div></div>`; return; }
     if (!arr.length) { $("#list").innerHTML = `<div class="list"><div class="empty">${q ? "검색 결과가 없어요." : view.filter === "attention" ? "부족하거나 품절된 상품이 없어요." : "옵션을 모두 등록했어요."}</div></div>`; return; }
